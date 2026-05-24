@@ -184,10 +184,18 @@ Never call these inside library code — they belong in `main`.
 - `tel.Shutdown(ctx)` runs under a 5-second timeout; calling it twice is
   a no-op.
 
-## Testing
+## Development & testing
+
+Everything runs in Docker — no local Go toolchain needed.
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
+./run-tests.sh
 ```
+
+This builds a `golang:1.25-alpine` image, mounts the working tree into
+it, and runs `go vet ./...` followed by `go test -race ./...`. The module
+cache and build cache live in a named volume (`go-cache`), so subsequent
+runs are fast.
+
+The same script runs in CI on every push and pull request
+(`.github/workflows/test.yml`).

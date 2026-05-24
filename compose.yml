@@ -1,0 +1,10 @@
+services:
+  test:
+    build: .
+    command: sh -c "go vet ./... && go test -race ./..."
+    volumes:
+      - .:/src
+      - go-cache:/go-cache
+
+volumes:
+  go-cache:

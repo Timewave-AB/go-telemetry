@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine
+FROM golang:1.26-alpine
 
 # gcc + musl-dev are needed for -race (CGO).
 RUN apk --no-cache add gcc musl-dev

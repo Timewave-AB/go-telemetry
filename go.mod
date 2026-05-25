@@ -1,6 +1,6 @@
 module github.com/Timewave-AB/go-telemetry
 
-go 1.25.0
+go 1.26.0
 
 require (
 	go.opentelemetry.io/contrib/bridges/otelslog v0.18.0

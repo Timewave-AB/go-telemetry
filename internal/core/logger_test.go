@@ -7,8 +7,8 @@ import (
 )
 
 // ctxRecordingHandler captures the ctx each record was emitted with,
-// so Logger tests can assert that the bound ctx flows through. Cloned
-// handlers (via WithAttrs/WithGroup) share the same records sink.
+// so Logger/SpanLogger tests can assert ctx propagation. Cloned handlers
+// (via WithAttrs/WithGroup) share the same records sink.
 type ctxRecordingHandler struct {
 	sink   *[]ctxRecord
 	attrs  []slog.Attr
@@ -87,35 +87,12 @@ func TestLoggerAllLevels(t *testing.T) {
 	}
 }
 
-func TestLoggerWithoutBoundCtxUsesBackground(t *testing.T) {
+func TestLoggerEmitsWithBackgroundContext(t *testing.T) {
+	// Logger is ctx-free: it always emits with context.Background().
 	log, h := newTestLogger()
 	log.Info("x")
 	if got := h.records()[0].ctx; got != context.Background() {
 		t.Errorf("ctx = %v, want context.Background()", got)
-	}
-}
-
-func TestLoggerWithBoundCtxPropagatesIt(t *testing.T) {
-	base, h := newTestLogger()
-	parent := context.WithValue(context.Background(), ctxKey{}, "marker")
-	bound := base.withContext(parent)
-	bound.Info("x")
-	recs := h.records()
-	if len(recs) != 1 {
-		t.Fatalf("expected 1 record, got %d", len(recs))
-	}
-	if got := recs[0].ctx.Value(ctxKey{}); got != "marker" {
-		t.Errorf("bound ctx not propagated: got value %v", got)
-	}
-}
-
-func TestLoggerWithBoundCtxDoesNotAffectParent(t *testing.T) {
-	base, h := newTestLogger()
-	parent := context.WithValue(context.Background(), ctxKey{}, "marker")
-	_ = base.withContext(parent)
-	base.Info("x")
-	if got := h.records()[0].ctx.Value(ctxKey{}); got != nil {
-		t.Errorf("base logger leaked bound ctx: got %v", got)
 	}
 }
 
@@ -136,17 +113,6 @@ func TestLoggerWithAttrsReturnsNewLogger(t *testing.T) {
 	})
 	if !found {
 		t.Error("attrs from With() not present on emitted record")
-	}
-}
-
-func TestLoggerWithPreservesBoundCtx(t *testing.T) {
-	base, h := newTestLogger()
-	parent := context.WithValue(context.Background(), ctxKey{}, "marker")
-	bound := base.withContext(parent)
-	child := bound.With("k", "v")
-	child.Info("x")
-	if got := h.records()[0].ctx.Value(ctxKey{}); got != "marker" {
-		t.Errorf("With() dropped bound ctx: %v", got)
 	}
 }
 

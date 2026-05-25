@@ -15,11 +15,13 @@ import (
 // Type aliases preserve methods, field access, and identity — callers
 // see exactly the types they had before the impl moved under internal/.
 type (
-	Logger    = core.Logger
-	Options   = core.Options
-	Telemetry = core.Telemetry
-	Tracer    = core.Tracer
-	Transport = core.Transport
+	Logger      = core.Logger
+	OTelHandles = core.OTelHandles
+	Options     = core.Options
+	SpanLogger  = core.SpanLogger
+	Telemetry   = core.Telemetry
+	Tracer      = core.Tracer
+	Transport   = core.Transport
 )
 
 // Transport selects the OTLP wire protocol.

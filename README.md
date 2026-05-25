@@ -43,21 +43,21 @@ func main() {
 
 ### Spans, with a logger that auto-correlates
 
-`tel.Tracer.Start` returns the standard `(ctx, span)` plus a `*Logger`
-pre-bound to that span's context. Plain `log.Info(...)` calls through the
-returned logger are tagged with the span's `trace_id` and `span_id` — no
-need to thread the context through every log call.
+`tel.Tracer.Start` returns the child context and a `*SpanLogger` bound
+to the new span. `log.Info(...)` calls through it are tagged with the
+span's `trace_id` and `span_id` — no need to thread the context through
+every log call. End the span via `log.Span().End()`.
 
 ```go
 func handleLogin(ctx context.Context, tel *telemetry.Telemetry, username string) error {
-    ctx, span, log := tel.Tracer.Start(ctx, "login")
-    defer span.End()
+    ctx, log := tel.Tracer.Start(ctx, "login")
+    defer log.Span().End()
 
     log = log.With("username", username)
     log.Info("user is trying to login")
 
     if err := authenticate(ctx, username); err != nil {
-        span.RecordError(err)
+        log.Span().RecordError(err)
         log.Error("login failed", "err", err)
         return err
     }
@@ -71,14 +71,19 @@ Nested spans work the same way — pass the returned `ctx` to the next
 `Start`, and each per-span logger correlates to its own span:
 
 ```go
-ctx, outer, log := tel.Tracer.Start(ctx, "request")
-defer outer.End()
+ctx, log := tel.Tracer.Start(ctx, "request")
+defer log.Span().End()
 log.Info("received")
 
-ctx, inner, log := tel.Tracer.Start(ctx, "db.query")
-defer inner.End()
-log.Info("querying")  // tagged with the inner span
+ctx, inner := tel.Tracer.Start(ctx, "db.query")
+defer inner.Span().End()
+inner.Info("querying")  // tagged with the inner span
 ```
+
+The top-level `tel.Logger` is a separate `*Logger` type with no span
+binding — it always emits with `context.Background()`. Use it for
+process-wide messages (startup, shutdown, periodic stats) where there is
+no active span.
 
 ### Metrics
 
@@ -101,9 +106,14 @@ jobs.Add(ctx, 1)
 | `Level`                | no       | `info`        | `error`/`warn`/`info`/`verbose`/`debug` (case-insensitive). |
 | `TraceSampleRatio`     | no       | `0` (always)  | `0` → always sample; `(0,1]` → ratio-based sampling.   |
 | `MetricExportInterval` | no       | SDK default (60s) | How often metrics are pushed.                      |
+| `LogExporter`          | no       | OTLP              | Override the log exporter (tests, non-OTLP backends). |
+| `TraceExporter`        | no       | OTLP              | Override the trace exporter.                          |
+| `MetricExporter`       | no       | OTLP              | Override the metric exporter.                         |
+| `OnError`              | no       | nil               | Receives async SDK errors (exporter failures, dropped batches) and multi-handler write errors. |
 
 If `OTLPEndpoint` has no port, the default port for the chosen transport
-is filled in automatically.
+is filled in automatically. Setting a per-signal exporter override
+enables that signal even when `OTLPEndpoint` is empty.
 
 ## Log format
 
@@ -141,21 +151,26 @@ stderr warning and falls back to `info`.
 `SetLoggerProvider`, or `SetTextMapPropagator`. Multiple `Init` calls in
 the same process are independent.
 
-The bundle's `LoggerProvider`, `TracerProvider`, `MeterProvider`, and
-`Propagator` fields are an escape hatch for wiring third-party
-instrumentation libraries that ask for them:
+The bundle's providers and propagator are reachable via `tel.OTel()`
+for wiring third-party instrumentation libraries that ask for them:
 
 ```go
 import "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+h := tel.OTel()
 client := &http.Client{
     Transport: otelhttp.NewTransport(http.DefaultTransport,
-        otelhttp.WithTracerProvider(tel.TracerProvider),
-        otelhttp.WithPropagators(tel.Propagator)),
+        otelhttp.WithTracerProvider(h.TracerProvider),
+        otelhttp.WithPropagators(h.Propagator)),
 }
 ```
 
-You can ignore these fields entirely if you don't need them.
+Most callers never need `tel.OTel()` — the day-to-day handles
+(`Logger`, `Tracer`, `Meter`) cover normal use.
+
+The one exception to "no globals": if `Options.OnError` is set, `Init`
+installs `otel.SetErrorHandler` so async SDK errors reach you. Opt-in
+only — leaving `OnError` nil keeps all globals untouched.
 
 ### Last-resort global registration
 
@@ -163,26 +178,34 @@ If you discover a dependency that reads `otel.GetTracerProvider()`
 unconditionally and silently drops spans, opt in at your `main`:
 
 ```go
-otel.SetTracerProvider(tel.TracerProvider)
-otel.SetTextMapPropagator(tel.Propagator)
+h := tel.OTel()
+otel.SetTracerProvider(h.TracerProvider)
+otel.SetTextMapPropagator(h.Propagator)
 ```
 
 Never call these inside library code — they belong in `main`.
 
 ### Reaching the underlying handles
 
-- `tel.Logger.Slog()` returns the underlying `*slog.Logger` for libraries
-  that take a stdlib logger directly.
+- `tel.Logger.Slog()` / `spanLog.Slog()` return the underlying
+  `*slog.Logger` for libraries that take a stdlib logger directly.
 - `tel.Tracer.OTel()` returns the underlying `trace.Tracer`.
+- `spanLog.Span()` returns the bound `trace.Span` — used to end the span,
+  record errors, set attributes, etc.
 
 ## Behavioural contract
 
-- `OTLPEndpoint == ""`: logs print to stdout; traces/metrics use noop
-  providers. No exporters are created, no goroutines started.
-- `OTLPEndpoint != ""`: logs fan out to stdout **and** OTLP; an OTLP
-  failure on one record does not suppress stdout for that record.
-- `tel.Shutdown(ctx)` runs under a 5-second timeout; calling it twice is
-  a no-op.
+- `OTLPEndpoint == ""` and no exporter overrides: logs print to stdout;
+  traces/metrics use noop providers. No exporters are created, no
+  goroutines started.
+- `OTLPEndpoint != ""` (or any per-signal exporter override): logs fan
+  out to stdout **and** the configured exporter; a downstream failure on
+  one record does not suppress stdout for that record.
+- `tel.Flush(ctx)` runs `ForceFlush` on all enabled providers under the
+  caller's `ctx`. Safe to call any number of times.
+- `tel.Shutdown(ctx)` flushes and tears down providers under the
+  caller's `ctx` — pick a deadline that matches your environment.
+  Calling it twice is a no-op.
 
 ## Development & testing
 

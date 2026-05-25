@@ -34,27 +34,40 @@ func TestPublicAPISurface(t *testing.T) {
 	if tel.Logger == nil || tel.Tracer == nil {
 		t.Fatal("Logger and Tracer must be non-nil")
 	}
-	if tel.Meter == nil || tel.LoggerProvider == nil || tel.TracerProvider == nil || tel.MeterProvider == nil || tel.Propagator == nil {
-		t.Fatal("escape-hatch providers must be non-nil")
+	if tel.Meter == nil {
+		t.Fatal("Meter must be non-nil")
 	}
 
-	// Tracer.Start triple return.
-	_, span, log := tel.Tracer.Start(context.Background(), "test-span")
-	span.End()
+	// OTel escape hatches grouped behind OTel().
+	h := tel.OTel()
+	if h.LoggerProvider == nil || h.TracerProvider == nil || h.MeterProvider == nil || h.Propagator == nil {
+		t.Fatal("OTel handles must be non-nil")
+	}
+
+	// Flush is a no-op on noop providers but must be callable.
+	if err := tel.Flush(context.Background()); err != nil {
+		t.Errorf("Flush: %v", err)
+	}
+
+	// Tracer.Start: (ctx, *SpanLogger).
+	_, spanLog := tel.Tracer.Start(context.Background(), "test-span")
+	spanLog.Info("inside-span")
+	spanLog.With("k", "v").Warn("attr-attached")
+	spanLog.Span().End()
 	_ = tel.Tracer.OTel()
 
-	// Logger surface.
-	log.Debug("d")
-	log.Verbose("v")
-	log.Info("i")
-	log.Warn("w")
-	log.Error("e")
-	log.With("k", "v").Info("with attr")
-	if log.Slog() == nil {
+	// Top-level Logger surface (ctx-free).
+	tel.Logger.Debug("d")
+	tel.Logger.Verbose("v")
+	tel.Logger.Info("i")
+	tel.Logger.Warn("w")
+	tel.Logger.Error("e")
+	tel.Logger.With("k", "v").Info("with attr")
+	if tel.Logger.Slog() == nil {
 		t.Fatal("Slog() must return non-nil")
 	}
 
-	// Level constants compile in slog-compatible expressions.
+	// Level constants compile in spanLog-compatible expressions.
 	levels := []any{
 		telemetry.LevelDebug,
 		telemetry.LevelVerbose,
@@ -65,4 +78,8 @@ func TestPublicAPISurface(t *testing.T) {
 	if len(levels) != 5 {
 		t.Fatal("five levels expected")
 	}
+
+	// SpanLogger type alias is reachable.
+	var _ *telemetry.SpanLogger = spanLog
+	var _ telemetry.OTelHandles = h
 }

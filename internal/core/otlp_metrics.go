@@ -10,10 +10,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
-func newMeterProvider(ctx context.Context, opts Options, res *resource.Resource) (metricapi.MeterProvider, func(context.Context) error, error) {
+func newMeterProvider(ctx context.Context, opts Options, res *resource.Resource) (metricapi.MeterProvider, func(context.Context) error, func(context.Context) error, error) {
 	exp, err := newMetricExporter(ctx, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	readerOpts := []sdkmetric.PeriodicReaderOption{}
 	if opts.MetricExportInterval > 0 {
@@ -23,10 +23,13 @@ func newMeterProvider(ctx context.Context, opts Options, res *resource.Resource)
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, readerOpts...)),
 		sdkmetric.WithResource(res),
 	)
-	return mp, mp.Shutdown, nil
+	return mp, mp.Shutdown, mp.ForceFlush, nil
 }
 
 func newMetricExporter(ctx context.Context, opts Options) (sdkmetric.Exporter, error) {
+	if opts.MetricExporter != nil {
+		return opts.MetricExporter, nil
+	}
 	endpoint := resolveOTLPEndpoint(opts.OTLPEndpoint, opts.Transport)
 	switch opts.Transport {
 	case TransportHTTP:

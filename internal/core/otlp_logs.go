@@ -10,19 +10,22 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
-func newLoggerProvider(ctx context.Context, opts Options, res *resource.Resource) (logsapi.LoggerProvider, func(context.Context) error, error) {
+func newLoggerProvider(ctx context.Context, opts Options, res *resource.Resource) (logsapi.LoggerProvider, func(context.Context) error, func(context.Context) error, error) {
 	exp, err := newLogExporter(ctx, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	lp := sdklog.NewLoggerProvider(
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
 		sdklog.WithResource(res),
 	)
-	return lp, lp.Shutdown, nil
+	return lp, lp.Shutdown, lp.ForceFlush, nil
 }
 
 func newLogExporter(ctx context.Context, opts Options) (sdklog.Exporter, error) {
+	if opts.LogExporter != nil {
+		return opts.LogExporter, nil
+	}
 	endpoint := resolveOTLPEndpoint(opts.OTLPEndpoint, opts.Transport)
 	switch opts.Transport {
 	case TransportHTTP:

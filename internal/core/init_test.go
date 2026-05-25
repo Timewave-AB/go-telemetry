@@ -3,10 +3,12 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +37,18 @@ func TestInitRejectsEmptyServiceName(t *testing.T) {
 	}
 }
 
+func TestInitRejectsUnknownTransport(t *testing.T) {
+	opts := baseOpts()
+	opts.Transport = Transport(99)
+	_, err := Init(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error for unknown Transport value")
+	}
+	if !strings.Contains(err.Error(), "Transport") {
+		t.Errorf("error should mention Transport, got %q", err.Error())
+	}
+}
+
 func TestInitAutoDetectsServiceVersionWhenEmpty(t *testing.T) {
 	opts := baseOpts()
 	opts.ServiceVersion = "" // should fall back to ReadBuildInfo or "unknown"
@@ -57,14 +71,15 @@ func TestInitNoOTLPUsesNoopProviders(t *testing.T) {
 	}
 	defer tel.Shutdown(context.Background())
 
-	if _, ok := tel.TracerProvider.(tracenoop.TracerProvider); !ok {
-		t.Errorf("TracerProvider = %T, want noop.TracerProvider", tel.TracerProvider)
+	h := tel.OTel()
+	if _, ok := h.TracerProvider.(tracenoop.TracerProvider); !ok {
+		t.Errorf("TracerProvider = %T, want noop.TracerProvider", h.TracerProvider)
 	}
-	if _, ok := tel.MeterProvider.(metricnoop.MeterProvider); !ok {
-		t.Errorf("MeterProvider = %T, want noop.MeterProvider", tel.MeterProvider)
+	if _, ok := h.MeterProvider.(metricnoop.MeterProvider); !ok {
+		t.Errorf("MeterProvider = %T, want noop.MeterProvider", h.MeterProvider)
 	}
-	if _, ok := tel.LoggerProvider.(logsnoop.LoggerProvider); !ok {
-		t.Errorf("LoggerProvider = %T, want noop.LoggerProvider", tel.LoggerProvider)
+	if _, ok := h.LoggerProvider.(logsnoop.LoggerProvider); !ok {
+		t.Errorf("LoggerProvider = %T, want noop.LoggerProvider", h.LoggerProvider)
 	}
 	if tel.Tracer == nil {
 		t.Error("Tracer is nil")
@@ -75,8 +90,61 @@ func TestInitNoOTLPUsesNoopProviders(t *testing.T) {
 	if tel.Logger == nil {
 		t.Error("Logger is nil")
 	}
-	if tel.Propagator == (propagation.TextMapPropagator)(nil) {
+	if h.Propagator == (propagation.TextMapPropagator)(nil) {
 		t.Error("Propagator is nil")
+	}
+}
+
+func TestOTelHandlesEmptyOnNilTelemetry(t *testing.T) {
+	var tel *Telemetry
+	if h := tel.OTel(); h.LoggerProvider != nil || h.TracerProvider != nil || h.MeterProvider != nil || h.Propagator != nil {
+		t.Errorf("nil Telemetry.OTel() should return zero OTelHandles, got %+v", h)
+	}
+}
+
+func TestInitDoesNotTouchErrorHandlerWhenOnErrorUnset(t *testing.T) {
+	// Install a marker handler before Init. If Init leaves the global
+	// error handler alone (the documented behaviour for OnError == nil),
+	// our marker remains active and otel.Handle reaches it.
+	var hit int
+	installMarkerErrorHandler(func(error) { hit++ })
+	defer restoreDefaultOtelErrorHandler()
+
+	opts := baseOpts()
+	tel, err := Init(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer tel.Shutdown(context.Background())
+
+	otelHandle(errors.New("probe"))
+	if hit != 1 {
+		t.Errorf("Init replaced our marker handler; hit=%d, want 1", hit)
+	}
+}
+
+func TestInitOnErrorReceivesOTelSDKErrors(t *testing.T) {
+	var captured []error
+	var mu sync.Mutex
+	opts := baseOpts()
+	opts.OnError = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		captured = append(captured, err)
+	}
+	tel, err := Init(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer tel.Shutdown(context.Background())
+	defer restoreDefaultOtelErrorHandler()
+
+	otelHandle(errors.New("sdk-failure"))
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 || captured[0].Error() != "sdk-failure" {
+		t.Errorf("OnError did not receive SDK error; captured = %v", captured)
 	}
 }
 
@@ -171,6 +239,49 @@ func TestShutdownBoundedByTimeout(t *testing.T) {
 	}
 	if took := time.Since(start); took > time.Second {
 		t.Errorf("shutdown took %v on noop providers — expected near-instant", took)
+	}
+}
+
+func TestShutdownUsesCallerContextNotInternalTimeout(t *testing.T) {
+	// makeShutdown must respect the caller's ctx instead of imposing its
+	// own bound, so callers (k8s preStop, CLIs) can choose the budget.
+	slow := func(ctx context.Context) error {
+		select {
+		case <-time.After(10 * time.Second):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	sh := makeShutdown([]func(context.Context) error{slow})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := sh(ctx)
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("shutdown did not honour caller ctx, took %v", took)
+	}
+	if err == nil {
+		t.Error("expected ctx deadline error")
+	}
+}
+
+func TestFlushOnNoopProvidersReturnsNil(t *testing.T) {
+	opts := baseOpts()
+	tel, err := Init(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer tel.Shutdown(context.Background())
+	if err := tel.Flush(context.Background()); err != nil {
+		t.Errorf("Flush on noop providers returned err: %v", err)
+	}
+}
+
+func TestFlushSafeOnNilTelemetry(t *testing.T) {
+	var tel *Telemetry
+	if err := tel.Flush(context.Background()); err != nil {
+		t.Errorf("Flush on nil returned err: %v", err)
 	}
 }
 

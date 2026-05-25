@@ -8,8 +8,11 @@ import (
 
 // multiHandler fans a record out to all child handlers. Errors are joined,
 // never short-circuited: a failing OTLP exporter must not suppress stdout.
+// onError, when non-nil, receives the joined error each Handle call —
+// without it, slog discards the error from Handler.Handle.
 type multiHandler struct {
 	handlers []slog.Handler
+	onError  func(error)
 }
 
 func (m *multiHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
@@ -31,7 +34,11 @@ func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
 			errs = append(errs, err)
 		}
 	}
-	return errors.Join(errs...)
+	joined := errors.Join(errs...)
+	if joined != nil && m.onError != nil {
+		m.onError(joined)
+	}
+	return joined
 }
 
 func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -39,7 +46,7 @@ func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for i, h := range m.handlers {
 		out[i] = h.WithAttrs(attrs)
 	}
-	return &multiHandler{handlers: out}
+	return &multiHandler{handlers: out, onError: m.onError}
 }
 
 func (m *multiHandler) WithGroup(name string) slog.Handler {
@@ -47,5 +54,5 @@ func (m *multiHandler) WithGroup(name string) slog.Handler {
 	for i, h := range m.handlers {
 		out[i] = h.WithGroup(name)
 	}
-	return &multiHandler{handlers: out}
+	return &multiHandler{handlers: out, onError: m.onError}
 }

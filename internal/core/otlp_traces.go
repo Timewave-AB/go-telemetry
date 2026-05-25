@@ -10,20 +10,23 @@ import (
 	traceapi "go.opentelemetry.io/otel/trace"
 )
 
-func newTracerProvider(ctx context.Context, opts Options, res *resource.Resource) (traceapi.TracerProvider, func(context.Context) error, error) {
+func newTracerProvider(ctx context.Context, opts Options, res *resource.Resource) (traceapi.TracerProvider, func(context.Context) error, func(context.Context) error, error) {
 	exp, err := newTraceExporter(ctx, opts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler(opts.TraceSampleRatio)),
 	)
-	return tp, tp.Shutdown, nil
+	return tp, tp.Shutdown, tp.ForceFlush, nil
 }
 
 func newTraceExporter(ctx context.Context, opts Options) (sdktrace.SpanExporter, error) {
+	if opts.TraceExporter != nil {
+		return opts.TraceExporter, nil
+	}
 	endpoint := resolveOTLPEndpoint(opts.OTLPEndpoint, opts.Transport)
 	switch opts.Transport {
 	case TransportHTTP:

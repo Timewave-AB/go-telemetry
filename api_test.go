@@ -29,7 +29,11 @@ func TestPublicAPISurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
+	t.Cleanup(func() {
+		if err := tel.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
 
 	if tel.Logger == nil || tel.Tracer == nil {
 		t.Fatal("Logger and Tracer must be non-nil")

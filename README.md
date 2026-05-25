@@ -220,5 +220,5 @@ it, and runs `go vet ./...` followed by `go test -race ./...`. The module
 cache and build cache live in a named volume (`go-cache`), so subsequent
 runs are fast.
 
-The same script runs in CI on every push and pull request
+The same script runs in CI on pull requests and pushes to `main`
 (`.github/workflows/test.yml`).

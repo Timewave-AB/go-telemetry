@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Timewave-AB/go-telemetry"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Locks down the public surface documented in README.md. If any
@@ -53,8 +54,12 @@ func TestPublicAPISurface(t *testing.T) {
 		t.Errorf("Flush: %v", err)
 	}
 
+	// Tracer.Extract joins an incoming W3C trace-context; the returned
+	// ctx feeds Start. Empty carrier → fresh trace, no error.
+	extracted := tel.Tracer.Extract(context.Background(), propagation.MapCarrier{})
+
 	// Tracer.Start: (ctx, *SpanLogger).
-	_, spanLog := tel.Tracer.Start(context.Background(), "test-span")
+	_, spanLog := tel.Tracer.Start(extracted, "test-span")
 	spanLog.Info("inside-span")
 	spanLog.With("k", "v").Warn("attr-attached")
 	spanLog.Span().End()

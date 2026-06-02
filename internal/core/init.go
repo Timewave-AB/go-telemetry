@@ -149,7 +149,7 @@ func Init(ctx context.Context, opts Options) (*Telemetry, error) {
 	tel.Meter = tel.meterProvider.Meter(opts.ServiceName)
 	baseLog := newLogger(buildSlog(opts.ServiceName, level, tel.loggerProvider, opts.OnError))
 	tel.Logger = baseLog
-	tel.Tracer = newTracer(tel.tracerProvider.Tracer(opts.ServiceName), baseLog)
+	tel.Tracer = newTracer(tel.tracerProvider.Tracer(opts.ServiceName), baseLog, tel.propagator)
 
 	tel.shutdown = makeShutdown(shutdowns)
 	tel.flush = makeFlush(flushes)

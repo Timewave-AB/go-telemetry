@@ -85,6 +85,38 @@ binding — it always emits with `context.Background()`. Use it for
 process-wide messages (startup, shutdown, periodic stats) where there is
 no active span.
 
+### Joining an incoming trace
+
+When a reverse-proxy (or any upstream) sends a W3C `traceparent`,
+`tel.Tracer.Extract` reads it from the incoming carrier and returns a
+context. The next `Start` then makes the service's span a child of the
+upstream span, in the *same* trace — so the service shows up under the
+proxy's request in Tempo/Grafana instead of in a detached trace. A
+missing or invalid header falls back to a fresh trace; `Extract` never
+errors.
+
+```go
+import (
+    "net/http"
+
+    "go.opentelemetry.io/otel/propagation"
+    "go.opentelemetry.io/otel/trace"
+)
+
+func handler(w http.ResponseWriter, r *http.Request) {
+    ctx := tel.Tracer.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+    ctx, log := tel.Tracer.Start(ctx, "GET /thing", trace.WithSpanKind(trace.SpanKindServer))
+    defer log.Span().End()
+    log.Info("handling request")
+}
+```
+
+`Extract` uses the composite propagator (`TraceContext` + `Baggage`) also
+exposed at `tel.OTel().Propagator` — it just saves you wiring the
+extraction by hand. It accepts any `propagation.TextMapCarrier`; wrap an
+`http.Header` with `propagation.HeaderCarrier`, or a `map[string]string`
+with `propagation.MapCarrier`.
+
 ### Metrics
 
 ```go

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -13,7 +14,11 @@ func newTestTracer() (*Tracer, *ctxRecordingHandler) {
 	h := newCtxRecordingHandler()
 	log := newLogger(slog.New(h))
 	tp := sdktrace.NewTracerProvider()
-	return newTracer(tp.Tracer("test"), log), h
+	prop := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	return newTracer(tp.Tracer("test"), log, prop), h
 }
 
 func TestTracerStartReturnsCtxAndSpanLogger(t *testing.T) {
@@ -99,6 +104,54 @@ func TestSpanLoggerWithPreservesSpan(t *testing.T) {
 	gotSpan := trace.SpanFromContext(recs[0].ctx)
 	if !sameSpan(gotSpan.SpanContext(), log.Span().SpanContext()) {
 		t.Error("With() dropped span binding")
+	}
+}
+
+func TestTracerExtractJoinsIncomingTraceparent(t *testing.T) {
+	// A reverse-proxy injects a W3C traceparent; the service span must
+	// land in the proxy's trace with the proxy's span as parent.
+	tr, _ := newTestTracer()
+	traceID, _ := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
+	parentID, _ := trace.SpanIDFromHex("b7ad6b7169203331")
+	carrier := propagation.MapCarrier{
+		"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+	}
+
+	ctx := tr.Extract(context.Background(), carrier)
+	_, log := tr.Start(ctx, "handle")
+	defer log.Span().End()
+
+	if got := log.Span().SpanContext().TraceID(); got != traceID {
+		t.Errorf("trace id = %v, want %v (span detached from incoming trace)", got, traceID)
+	}
+	rw := log.Span().(sdktrace.ReadWriteSpan)
+	if got := rw.Parent().SpanID(); got != parentID {
+		t.Errorf("parent span id = %v, want %v", got, parentID)
+	}
+}
+
+func TestTracerExtractMissingOrInvalidHeaderStartsNewTrace(t *testing.T) {
+	// Missing or malformed traceparent must yield a fresh root span with
+	// no parent — never an error.
+	cases := map[string]propagation.MapCarrier{
+		"missing": {},
+		"invalid": {"traceparent": "not-a-valid-traceparent"},
+		"zero-id": {"traceparent": "00-00000000000000000000000000000000-0000000000000000-01"},
+	}
+	for name, carrier := range cases {
+		t.Run(name, func(t *testing.T) {
+			tr, _ := newTestTracer()
+			ctx := tr.Extract(context.Background(), carrier)
+			_, log := tr.Start(ctx, "handle")
+			defer log.Span().End()
+
+			if !log.Span().SpanContext().IsValid() {
+				t.Error("expected a valid new span")
+			}
+			if log.Span().(sdktrace.ReadWriteSpan).Parent().IsValid() {
+				t.Error("expected no remote parent")
+			}
+		})
 	}
 }
 

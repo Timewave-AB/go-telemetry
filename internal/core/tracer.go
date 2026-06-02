@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -11,12 +12,13 @@ import (
 // child context, a *SpanLogger pre-bound to the new span. Logs written
 // through that SpanLogger correlate to the span automatically.
 type Tracer struct {
-	tr  trace.Tracer
-	log *slog.Logger
+	tr   trace.Tracer
+	log  *slog.Logger
+	prop propagation.TextMapPropagator
 }
 
-func newTracer(tr trace.Tracer, log *Logger) *Tracer {
-	return &Tracer{tr: tr, log: log.log}
+func newTracer(tr trace.Tracer, log *Logger, prop propagation.TextMapPropagator) *Tracer {
+	return &Tracer{tr: tr, log: log.log, prop: prop}
 }
 
 // Start begins a new span and returns the child context and a
@@ -24,6 +26,22 @@ func newTracer(tr trace.Tracer, log *Logger) *Tracer {
 func (t *Tracer) Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, *SpanLogger) {
 	ctx, span := t.tr.Start(ctx, name, opts...)
 	return ctx, &SpanLogger{log: t.log, ctx: ctx, span: span}
+}
+
+// Extract reads incoming W3C trace-context (traceparent/tracestate) from
+// carrier and returns a context whose active span context is the remote
+// parent. Feed the result to Start so the service's span joins the
+// caller's trace — e.g. a reverse-proxy's server span. A missing or
+// invalid header leaves ctx unchanged, so Start opens a fresh root span;
+// it never errors.
+//
+// Wrap an http.Header with propagation.HeaderCarrier:
+//
+//	ctx = tel.Tracer.Extract(ctx, propagation.HeaderCarrier(req.Header))
+//	ctx, log := tel.Tracer.Start(ctx, "handle")
+//	defer log.Span().End()
+func (t *Tracer) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	return t.prop.Extract(ctx, carrier)
 }
 
 // OTel returns the underlying trace.Tracer. Escape hatch for callers

@@ -34,7 +34,15 @@ type levelProcessor struct {
 	min logsapi.Severity
 }
 
+var _ sdklog.Processor = levelProcessor{}
+
 func (p levelProcessor) Enabled(_ context.Context, param sdklog.EnabledParameters) bool {
+	// The SDK documents an unset severity as indeterminate, and a processor
+	// must not turn "cannot tell" into a dropped record.
+	if param.Severity == logsapi.SeverityUndefined {
+		return true
+	}
+
 	return param.Severity >= p.min
 }
 

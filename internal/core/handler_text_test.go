@@ -155,13 +155,18 @@ func TestTextHandlerQuotesNonStringValuesNeedingIt(t *testing.T) {
 func TestTextHandlerLeavesSimpleValuesUnquoted(t *testing.T) {
 	h, buf := newTextHandlerForTest(t, LevelInfo)
 	r := slog.NewRecord(fixedTime, LevelInfo, "hit", 0)
-	r.AddAttrs(slog.Int("status", 200), slog.Bool("ok", true))
+	r.AddAttrs(
+		slog.Int("status", 200),
+		slog.Bool("ok", true),
+		slog.Uint64("size", 42),
+		slog.Float64("ratio", 1.5),
+	)
 	if err := h.Handle(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
 
 	got := buf.String()
-	want := `2026-05-24 14:02:11 [INFO] msg="hit" ok=true status=200` + "\n"
+	want := `2026-05-24 14:02:11 [INFO] msg="hit" ok=true ratio=1.5 size=42 status=200` + "\n"
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}

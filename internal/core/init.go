@@ -111,7 +111,7 @@ func Init(ctx context.Context, opts Options) (*Telemetry, error) {
 	}
 
 	if logsOn {
-		lp, lShutdown, lFlush, err := newLoggerProvider(ctx, opts, res)
+		lp, lShutdown, lFlush, err := newLoggerProvider(ctx, opts, res, level)
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: logs: %w", err)
 		}

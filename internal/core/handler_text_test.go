@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -129,5 +130,39 @@ func TestTextHandlerTimestampUTC(t *testing.T) {
 	}
 	if !strings.HasPrefix(buf.String(), "2026-05-24 14:00:00 ") {
 		t.Errorf("expected UTC-rendered timestamp, got %q", buf.String())
+	}
+}
+
+func TestTextHandlerQuotesNonStringValuesNeedingIt(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	r := slog.NewRecord(fixedTime, LevelError, "boom", 0)
+	// An error sorts before retryIn, so an unquoted value swallows the next field.
+	r.AddAttrs(
+		slog.Any("error", errors.New("dial tcp: connection refused")),
+		slog.Duration("retryIn", time.Second),
+	)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	want := `2026-05-24 14:02:11 [ERROR] msg="boom" error="dial tcp: connection refused" retryIn=1s` + "\n"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestTextHandlerLeavesSimpleValuesUnquoted(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	r := slog.NewRecord(fixedTime, LevelInfo, "hit", 0)
+	r.AddAttrs(slog.Int("status", 200), slog.Bool("ok", true))
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	want := `2026-05-24 14:02:11 [INFO] msg="hit" ok=true status=200` + "\n"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }

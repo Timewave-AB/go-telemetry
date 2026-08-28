@@ -166,3 +166,73 @@ func TestTextHandlerLeavesSimpleValuesUnquoted(t *testing.T) {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
+
+func TestTextHandlerKeepsAMultilineValueOnOneLine(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	r := slog.NewRecord(fixedTime, LevelError, "telemetry", 0)
+	// errors.Join separates with a newline and no space, which is what this
+	// package hands to Options.OnError.
+	r.AddAttrs(
+		slog.Any("error", errors.Join(errors.New("timeout"), errors.New("canceled"))),
+		slog.Duration("retryIn", time.Second),
+	)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if lines := strings.Count(got, "\n"); lines != 1 {
+		t.Errorf("record produced %d lines, want 1: %q", lines, got)
+	}
+	want := `2026-05-24 14:02:11 [ERROR] msg="telemetry" error="timeout\ncanceled" retryIn=1s` + "\n"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestTextHandlerQuotesTabbedValue(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	r := slog.NewRecord(fixedTime, LevelInfo, "x", 0)
+	r.AddAttrs(slog.Any("tabbed", errors.New("a\tb")), slog.Int("next", 1))
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `2026-05-24 14:02:11 [INFO] msg="x" next=1 tabbed="a\tb"` + "\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestTextHandlerRendersTimeAttrAsISOInUTC(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	loc, _ := time.LoadLocation("Europe/Stockholm")
+	r := slog.NewRecord(fixedTime, LevelInfo, "x", 0)
+	r.AddAttrs(slog.Time("at", time.Date(2026, 5, 24, 16, 0, 0, 0, loc)))
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `2026-05-24 14:02:11 [INFO] msg="x" at=2026-05-24T14:00:00Z` + "\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestTextHandlerQuotesAnEmptyRendering(t *testing.T) {
+	h, buf := newTextHandlerForTest(t, LevelInfo)
+	r := slog.NewRecord(fixedTime, LevelInfo, "x", 0)
+	r.AddAttrs(slog.Any("blank", emptyStringer{}), slog.Int("next", 1))
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+
+	want := `2026-05-24 14:02:11 [INFO] msg="x" blank="" next=1` + "\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+type emptyStringer struct{}
+
+func (emptyStringer) String() string { return "" }

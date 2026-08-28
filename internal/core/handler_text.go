@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // textHandler renders a slog.Record as a single human-readable line:
@@ -119,21 +121,26 @@ func appendAttr(dst []groupedAttr, groups []string, a slog.Attr) []groupedAttr {
 	return append(dst, groupedAttr{key: key, value: a.Value.Resolve()})
 }
 
-// writeValue quotes strings, and any other kind whose rendering carries a
-// space, an equals sign or a quote — without that the value runs into the
-// next field and the line stops being parseable.
+// writeValue writes a value so it can never run into the next field. Only kinds
+// whose rendering cannot contain a separator go out bare; everything else is
+// quoted, which keeps a kind added later safe without revisiting this.
 func writeValue(b *strings.Builder, v slog.Value) {
-	if v.Kind() == slog.KindString {
+	switch v.Kind() {
+	case slog.KindInt64:
+		b.WriteString(strconv.FormatInt(v.Int64(), 10))
+	case slog.KindUint64:
+		b.WriteString(strconv.FormatUint(v.Uint64(), 10))
+	case slog.KindBool:
+		b.WriteString(strconv.FormatBool(v.Bool()))
+	case slog.KindFloat64:
+		b.WriteString(strconv.FormatFloat(v.Float64(), 'g', -1, 64))
+	case slog.KindDuration:
+		b.WriteString(v.Duration().String())
+	case slog.KindTime:
+		b.WriteString(v.Time().UTC().Format(time.RFC3339Nano))
+	case slog.KindString:
 		fmt.Fprintf(b, "%q", v.String())
-		return
+	default:
+		fmt.Fprintf(b, "%q", fmt.Sprint(v.Any()))
 	}
-
-	rendered := fmt.Sprintf("%v", v.Any())
-
-	if strings.ContainsAny(rendered, " =\"") {
-		fmt.Fprintf(b, "%q", rendered)
-		return
-	}
-
-	b.WriteString(rendered)
 }

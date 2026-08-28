@@ -158,8 +158,9 @@ Stdout always receives plain text, even with OTLP enabled:
 - Timestamps are UTC.
 - Levels render as `ERROR`, `WARN`, `INFO`, `VERBOSE`, `DEBUG`.
 - Attributes are sorted alphabetically per record.
-- Values are quoted when they carry a space, `=` or `"`, whatever their type,
-  so a value can never run into the next field.
+- Strings are always quoted. Numbers, booleans and durations are written bare;
+  every other type is quoted, so a value can never run into the next field.
+- `time.Time` attributes render as RFC 3339 in UTC.
 - Groups become dotted prefixes: `req.id="abc"`.
 - The format is fixed by design — every service using this package looks the
   same in `kubectl logs`/`docker logs`.
@@ -236,7 +237,7 @@ Never call these inside library code — they belong in `main`.
   out to stdout **and** the configured exporter; a downstream failure on
   one record does not suppress stdout for that record.
 - `Level` gates both legs: a record below it is neither printed nor
-  exported, so lowering it reduces collector ingest.
+  exported, so a stricter `Level` (say `error`) reduces collector ingest.
 - `tel.Flush(ctx)` runs `ForceFlush` on all enabled providers under the
   caller's `ctx`. Safe to call any number of times.
 - `tel.Shutdown(ctx)` flushes and tears down providers under the

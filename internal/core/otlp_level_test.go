@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	logsapi "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -163,12 +164,12 @@ func TestOTLPLegFiltersDirectProviderEmit(t *testing.T) {
 
 	var below logsapi.Record
 	below.SetSeverity(logsapi.SeverityDebug)
-	below.SetBody(logsapi.StringValue("direct-debug"))
+	below.SetBody(attribute.StringValue("direct-debug"))
 	lg.Emit(context.Background(), below)
 
 	var above logsapi.Record
 	above.SetSeverity(logsapi.SeverityInfo)
-	above.SetBody(logsapi.StringValue("direct-info"))
+	above.SetBody(attribute.StringValue("direct-info"))
 	lg.Emit(context.Background(), above)
 
 	if err := tel.Shutdown(context.Background()); err != nil {
@@ -207,7 +208,7 @@ func TestOTLPLegKeepsUnsetSeverityOnDirectEmit(t *testing.T) {
 	}
 
 	var unset logsapi.Record
-	unset.SetBody(logsapi.StringValue("no-severity"))
+	unset.SetBody(attribute.StringValue("no-severity"))
 	tel.OTel().LoggerProvider.Logger("probe").Emit(context.Background(), unset)
 
 	if err := tel.Shutdown(context.Background()); err != nil {

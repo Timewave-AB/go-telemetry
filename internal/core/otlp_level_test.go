@@ -191,3 +191,32 @@ func TestLevelProcessorTreatsUndefinedSeverityAsIndeterminate(t *testing.T) {
 		t.Error("Enabled with an unset severity returned false; unset is indeterminate, not below")
 	}
 }
+
+// Enabled treats an unset severity as indeterminate, so OnEmit must not then
+// drop it: "cannot tell" has to mean the same thing on both gates.
+func TestOTLPLegKeepsUnsetSeverityOnDirectEmit(t *testing.T) {
+	rec := &severityRecorder{}
+
+	_, restore := captureStdout(t)
+	defer restore()
+
+	opts := baseOpts()
+	opts.LogExporter = rec
+
+	tel, err := Init(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	var unset logsapi.Record
+	unset.SetBody(logsapi.StringValue("no-severity"))
+	tel.OTel().LoggerProvider.Logger("probe").Emit(context.Background(), unset)
+
+	if err := tel.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if got := rec.severities(); len(got) != 1 {
+		t.Errorf("exported %v, want the unset-severity record kept", got)
+	}
+}

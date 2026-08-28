@@ -119,14 +119,21 @@ func appendAttr(dst []groupedAttr, groups []string, a slog.Attr) []groupedAttr {
 	return append(dst, groupedAttr{key: key, value: a.Value.Resolve()})
 }
 
-// writeValue prints strings (and string-ish kinds) quoted via %q,
-// everything else via %v. Keeps the format unambiguous when values
-// contain spaces or equals signs.
+// writeValue quotes strings, and any other kind whose rendering carries a
+// space, an equals sign or a quote — without that the value runs into the
+// next field and the line stops being parseable.
 func writeValue(b *strings.Builder, v slog.Value) {
-	switch v.Kind() {
-	case slog.KindString:
+	if v.Kind() == slog.KindString {
 		fmt.Fprintf(b, "%q", v.String())
-	default:
-		fmt.Fprintf(b, "%v", v.Any())
+		return
 	}
+
+	rendered := fmt.Sprintf("%v", v.Any())
+
+	if strings.ContainsAny(rendered, " =\"") {
+		fmt.Fprintf(b, "%q", rendered)
+		return
+	}
+
+	b.WriteString(rendered)
 }

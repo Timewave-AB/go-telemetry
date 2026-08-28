@@ -139,8 +139,8 @@ func writeValue(b *strings.Builder, v slog.Value) {
 	case slog.KindTime:
 		b.WriteString(v.Time().UTC().Format(time.RFC3339Nano))
 	case slog.KindString:
-		fmt.Fprintf(b, "%q", v.String())
+		b.WriteString(strconv.Quote(v.String()))
 	default:
-		fmt.Fprintf(b, "%q", fmt.Sprint(v.Any()))
+		b.WriteString(strconv.Quote(fmt.Sprint(v.Any())))
 	}
 }

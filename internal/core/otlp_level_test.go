@@ -94,20 +94,18 @@ func TestOTLPLegExportsEveryLevelAtDebug(t *testing.T) {
 	}
 }
 
-// The threshold is derived from the otelslog bridge's own level-to-severity
-// offset. Pinning the exact severity per level turns that shared arithmetic
-// into a checked assumption, so a bridge change cannot silently widen what
-// reaches the collector.
+// Pins the bridge's level-to-severity mapping, which severityFor recomputes
+// rather than imports: a drift there would otherwise widen exports silently.
 func TestOTLPLegExportsExactSeveritiesPerLevel(t *testing.T) {
 	for _, tc := range []struct {
 		level string
 		want  []logsapi.Severity
 	}{
-		{"debug", []logsapi.Severity{5, 7, 9, 13, 17}},
-		{"verbose", []logsapi.Severity{7, 9, 13, 17}},
-		{"info", []logsapi.Severity{9, 13, 17}},
-		{"warning", []logsapi.Severity{13, 17}},
-		{"error", []logsapi.Severity{17}},
+		{"debug", []logsapi.Severity{logsapi.SeverityDebug, logsapi.SeverityDebug3, logsapi.SeverityInfo, logsapi.SeverityWarn, logsapi.SeverityError}},
+		{"verbose", []logsapi.Severity{logsapi.SeverityDebug3, logsapi.SeverityInfo, logsapi.SeverityWarn, logsapi.SeverityError}},
+		{"info", []logsapi.Severity{logsapi.SeverityInfo, logsapi.SeverityWarn, logsapi.SeverityError}},
+		{"warning", []logsapi.Severity{logsapi.SeverityWarn, logsapi.SeverityError}},
+		{"error", []logsapi.Severity{logsapi.SeverityError}},
 	} {
 		t.Run(tc.level, func(t *testing.T) {
 			rec := &severityRecorder{}
@@ -185,7 +183,7 @@ func TestOTLPLegFiltersDirectProviderEmit(t *testing.T) {
 // The SDK documents an unset severity as indeterminate, which a processor must
 // answer with true rather than dropping the record.
 func TestLevelProcessorTreatsUndefinedSeverityAsIndeterminate(t *testing.T) {
-	p := levelProcessor{Processor: sdklog.NewBatchProcessor(&severityRecorder{}), min: logsapi.SeverityError}
+	p := levelProcessor{Processor: stubProcessor{}, min: logsapi.SeverityError}
 
 	if !p.Enabled(context.Background(), sdklog.EnabledParameters{}) {
 		t.Error("Enabled with an unset severity returned false; unset is indeterminate, not below")
@@ -220,3 +218,12 @@ func TestOTLPLegKeepsUnsetSeverityOnDirectEmit(t *testing.T) {
 		t.Errorf("exported %v, want the unset-severity record kept", got)
 	}
 }
+
+// stubProcessor stands in where a test only needs levelProcessor's own gates
+// and would otherwise leave a batch processor's goroutine running.
+type stubProcessor struct{}
+
+func (stubProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool { return true }
+func (stubProcessor) OnEmit(context.Context, *sdklog.Record) error           { return nil }
+func (stubProcessor) Shutdown(context.Context) error                         { return nil }
+func (stubProcessor) ForceFlush(context.Context) error                       { return nil }

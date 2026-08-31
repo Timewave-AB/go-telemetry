@@ -69,13 +69,20 @@ section).
 6. **The escape hatch is always open.** Providers, propagator, tracer and the
    underlying `*slog.Logger` are reachable, so no consumer is ever stuck behind
    this package.
+7. **Call sites depend on our types, not OpenTelemetry's.** The day-to-day
+   handles are house types, so replacing what sits underneath them is a change
+   to this package rather than an edit to every call site in every service.
+   This is a migration-cost goal, not a binary-size one — see §3 V4.
 
 ### 2.3 Non-goals
 
 - **Backends other than OTLP.** Exporter overrides are a seam for tests and
   unusual cases, not a plugin system.
-- **A metrics API.** `Meter` is the stock OTel meter, unwrapped; naming and
-  cardinality are yours.
+- **Metrics conventions.** Metric names, units and label cardinality are the
+  caller's; the package supplies instruments, not a taxonomy.
+- **A full facade over the OTel metrics API.** The house instruments (W12) are
+  a deliberate subset. Anything they do not cover goes through
+  `tel.OTel().MeterProvider`.
 - **Auto-instrumentation.** `otelhttp`, `otelgrpc` and friends wire through
   `tel.OTel()`.
 - **Log sampling or rate limiting.** Use `Level`, or the collector.
@@ -136,6 +143,37 @@ Consequences: an operator reading `docker logs` cannot pivot to a trace, and wit
 `OTLPEndpoint: ""` — the configuration the README presents as the simple case —
 the headline feature does nothing at all while the tracer is a noop, so someone
 evaluating the library sees the promise fail and cannot tell it is by design.
+
+### V4 — The dependency graph is large, and no facade shrinks it
+
+Measured 2026-08-30 against `a7272f1`, `CGO_ENABLED=0`, `-ldflags="-s -w"`:
+
+| Build | Packages | Stripped binary |
+|---|---|---|
+| `Init` with all three signals | 458 | 15.7 MB |
+| logs + traces only | 407 | 14.4 MB |
+| logs + traces + metrics | 427 | 15.3 MB |
+
+The metrics path costs **+20 packages and ~948 KB (~6%)**. The weight is the
+transport: 109 of the 458 packages are gRPC/protobuf, and 14.4 MB is already
+spent before metrics enter.
+
+Two conclusions, both load-bearing for W12:
+
+1. **A house wrapper removes zero bytes.** Go's build graph follows what the
+   implementation imports, not what the API exposes. Wrapping `Meter` does not
+   stop this package importing `sdkmetric`; it stays in `go.mod` and in every
+   consumer's binary. Only compile-time separation — a sub-package or module
+   split, or build tags — removes a package from a consumer's build, and
+   *runtime* per-signal enablement (§5 item 7) saves nothing at all.
+2. **If binary size is ever the goal, metrics is the wrong target.** Defaulting
+   to `otlphttp` instead of gRPC would save several times what removing metrics
+   could.
+
+So W12's justification is migration cost — the OTel API surface is large and its
+transitive graph is messy, so pinning consumer call sites to house types keeps a
+future swap inside this package. It is explicitly *not* a size optimisation, and
+should never be recorded as one.
 
 ---
 
@@ -324,6 +362,62 @@ logger and no adapter working around a library gap.
   shape but the SDK's option types are unrelated) and *why* `Meter` is unwrapped.
   Silence makes deliberate duplication indistinguishable from drift.
 
+### W12 — House metric instruments, as a narrow subset — S
+
+Wrap `Meter` so consumer call sites reference house types. Deliberately a
+*subset*, not a facade — that is what keeps it small enough to be worth having:
+
+```go
+type Attr struct {
+	Key   string
+	Value any
+}
+
+type Counter interface {
+	Add(ctx context.Context, n int64, attrs ...Attr)
+}
+
+type Histogram interface {
+	Record(ctx context.Context, v float64, attrs ...Attr)
+}
+```
+
+Cover only the instrument shapes actually used; anything else goes through
+`tel.OTel().MeterProvider`, which goal 6 guarantees.
+
+The subset boundary is the whole design. A wrapper that hands back
+`metric.Int64Counter` achieves nothing, because `Add` is
+`Add(ctx, incr int64, options ...AddOption)` and attributes arrive via
+`metric.WithAttributes(...attribute.KeyValue)` — so OTel types reach the call
+site anyway. Full insulation would mean wrapping roughly eight instrument types,
+the option types and the attribute type, which is re-declaring the API. Owning
+`Attr` is what avoids that.
+
+Rationale is migration cost, per §3 V4 — **not** dependency weight. Breaking
+change: batch with §5 item 1 into one release.
+
+*Acceptance:* a service can create and use counters and histograms without
+importing `go.opentelemetry.io/otel/...` anywhere; an exotic instrument is still
+reachable through `OTel()`; the README says which shapes are covered.
+
+### W13 — Close the `trace.Span` leak at the call site — S
+
+Goal 7 is not met today, and the largest breach is not the metrics API — it is
+`spanLog.Span()`, which returns a `trace.Span`. The README's headline pattern is
+`defer log.Span().End()`, so an OTel type appears in *every function that opens
+a span*. Wrapping `Meter` while that stands would treat the smallest leak and
+leave the largest.
+
+Give `SpanLogger` the operations the call site actually needs — `End()`,
+`RecordError(err)`, `SetAttributes(...Attr)` — so `Span()` becomes the escape
+hatch rather than the documented path.
+
+Decide alongside §5 item 1: both concern the logger/tracer surface, both are
+breaking, and they should land in one release rather than two.
+
+*Acceptance:* the README's span examples import no OTel package; `Span()` still
+exists and is documented as the escape hatch.
+
 ---
 
 ## 5. Open questions
@@ -357,7 +451,16 @@ logger and no adapter working around a library gap.
 5. **Ownership of injected exporters.** `Init`'s rollback only shuts down providers
    it built, so a caller-supplied exporter is never torn down. Document who owns
    it, or take ownership.
-6. **Per-signal enablement.** `OTLPEndpoint` is all-or-nothing across the three
+6. **Default metric instrumentation and exemplars.** `Init` starts a full
+   metrics pipeline — exporter, periodic reader, goroutine, collector connection
+   — that exports nothing until the caller creates instruments; there is no
+   `otelruntime` dependency and no exemplar configuration anywhere in the tree.
+   Two questions follow: should `Init` ship default runtime/process metrics so
+   the pipeline it starts is not empty, and should it configure an exemplar
+   filter so a histogram bucket links back to a trace? Note that goal 3
+   currently excludes metrics by omission — logs get trace correlation and
+   traces get the traceparent join, while metrics get neither.
+7. **Per-signal enablement.** `OTLPEndpoint` is all-or-nothing across the three
    signals, so "OTLP logs, no traces yet" — the position of a service mid-migration
    — is reachable only by injecting a hand-built exporter through what is
    documented as a test seam. The first adoption attempt did exactly that and
@@ -377,5 +480,11 @@ sitting 2   W8                     decision records, before core-4-go-lab writes
 then        W3, W4                 storefront and the headline feature
 then        W5, W6, W7             the public-library surface
 then        W9, W10                proof it works, and a real consumer
+one release W12, W13, §5 item 1    the breaking API batch — house types at the
+                                   call site, decided and shipped together
 ongoing     W11                    fold into whichever branch touches the file
 ```
+
+W12 and W13 are both breaking and both serve goal 7, so they belong in one
+`v0.x` bump together with whatever §5 item 1 settles — not dribbled out across
+three releases that each break consumers.
